@@ -21,6 +21,7 @@ create index if not exists tasks_user_id_idx on public.tasks(user_id);
 -- itself, not just hidden in the app's UI.
 alter table public.tasks enable row level security;
 
+drop policy if exists "Users can manage their own tasks" on public.tasks;
 create policy "Users can manage their own tasks"
   on public.tasks
   for all
@@ -39,11 +40,18 @@ create table if not exists public.expenses (
   created_at timestamptz default now()
 );
 
+-- 'debit' = money spent, 'credit' = money received. Safe to re-run, and adds
+-- the column to a table that was created before this existed.
+alter table public.expenses
+  add column if not exists type text not null default 'debit'
+  check (type in ('debit','credit'));
+
 create index if not exists expenses_user_id_idx on public.expenses(user_id);
 create index if not exists expenses_date_idx on public.expenses(date);
 
 alter table public.expenses enable row level security;
 
+drop policy if exists "Users can manage their own expenses" on public.expenses;
 create policy "Users can manage their own expenses"
   on public.expenses
   for all

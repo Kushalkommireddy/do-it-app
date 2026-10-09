@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { supabase } from '../lib/supabaseClient';
 
-const CATEGORY_COLORS = {
+const DEBIT_COLORS = {
   Food: '#FF6B6B',
   Transport: '#4ECDC4',
   Shopping: '#FFB84C',
@@ -13,9 +13,21 @@ const CATEGORY_COLORS = {
   Health: '#2ECC71',
   Other: '#74B9FF',
 };
-const CATEGORY_LIST = Object.keys(CATEGORY_COLORS);
+const CREDIT_COLORS = {
+  Salary: '#2ECC71',
+  Freelance: '#00B894',
+  Refund: '#4ECDC4',
+  Gift: '#FF6FD8',
+  Interest: '#FFB84C',
+  'Other credit': '#74B9FF',
+};
+const CATEGORIES = { debit: Object.keys(DEBIT_COLORS), credit: Object.keys(CREDIT_COLORS) };
+const colorFor = (cat) => DEBIT_COLORS[cat] || CREDIT_COLORS[cat] || '#999999';
+const typeOf = (e) => (e.type === 'credit' ? 'credit' : 'debit');
+
 const pad2 = (n) => String(n).padStart(2, '0');
-const fmtMoney = (n) => '$' + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtMoney = (n) => inr.format(Number(n));
 
 export default function ExpenseApp({ session, theme, setTheme, onSignOut, onSwitchApp }) {
   const [expenses, setExpenses] = useState([]);
@@ -26,25 +38,37 @@ export default function ExpenseApp({ session, theme, setTheme, onSignOut, onSwit
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all'); // all | debit | credit
+  const [chartType, setChartType] = useState('debit'); // debit | credit
+  const [error, setError] = useState('');
 
   const fetchExpenses = useCallback(async () => {
-    const { data, error } = await supabase.from('expenses').select('*').order('date', { ascending: false });
-    if (!error && data) setExpenses(data);
+    const { data, error: err } = await supabase.from('expenses').select('*').order('date', { ascending: false });
+    if (err) setError(err.message);
+    else if (data) setExpenses(data);
   }, []);
   useEffect(() => { fetchExpenses(); }, [fetchExpenses]);
 
   async function addExpense(data) {
-    const { data: row, error } = await supabase.from('expenses').insert({ ...data, user_id: session.user.id }).select().single();
-    if (!error && row) setExpenses((e) => [row, ...e]);
+    setError('');
+    const { data: row, error: err } = await supabase.from('expenses').insert({ ...data, user_id: session.user.id }).select().single();
+    if (err) { setError(err.message); return false; }
+    setExpenses((e) => [row, ...e]);
+    return true;
   }
   async function updateExpense(id, patch) {
-    const { data: row, error } = await supabase.from('expenses').update(patch).eq('id', id).select().single();
-    if (!error && row) setExpenses((e) => e.map((x) => (x.id === id ? row : x)));
+    setError('');
+    const { data: row, error: err } = await supabase.from('expenses').update(patch).eq('id', id).select().single();
+    if (err) { setError(err.message); return false; }
+    setExpenses((e) => e.map((x) => (x.id === id ? row : x)));
+    return true;
   }
   async function deleteExpense(id) {
-    if (!confirm('Delete this expense? This cannot be undone.')) return;
-    const { error } = await supabase.from('expenses').delete().eq('id', id);
-    if (!error) setExpenses((e) => e.filter((x) => x.id !== id));
+    if (!confirm('Delete this entry? This cannot be undone.')) return;
+    setError('');
+    const { error: err } = await supabase.from('expenses').delete().eq('id', id);
+    if (err) setError(err.message);
+    else setExpenses((e) => e.filter((x) => x.id !== id));
   }
 
   const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -54,16 +78,26 @@ export default function ExpenseApp({ session, theme, setTheme, onSignOut, onSwit
     const d = new Date(e.date + 'T00:00:00');
     return d.getFullYear() === viewYear && d.getMonth() === viewMonth;
   };
-  const periodExpenses = expenses.filter(inPeriod);
-  const filtered = categoryFilter ? periodExpenses.filter((e) => e.category === categoryFilter) : periodExpenses;
-  const total = periodExpenses.reduce((s, e) => s + Number(e.amount), 0);
-  const count = periodExpenses.length;
-  const avg = count ? total / count : 0;
+  const periodEntries = expenses.filter(inPeriod);
+  const debits = periodEntries.filter((e) => typeOf(e) === 'debit');
+  const credits = periodEntries.filter((e) => typeOf(e) === 'credit');
+  const sum = (arr) => arr.reduce((s, e) => s + Number(e.amount), 0);
+  const totalSpent = sum(debits);
+  const totalCredit = sum(credits);
+  const balance = totalCredit - totalSpent;
 
+  const listBase = typeFilter === 'all' ? periodEntries : periodEntries.filter((e) => typeOf(e) === typeFilter);
+  const filtered = categoryFilter ? listBase.filter((e) => e.category === categoryFilter) : listBase;
+
+  const chartEntries = chartType === 'debit' ? debits : credits;
   const byCategory = {};
-  periodExpenses.forEach((e) => { byCategory[e.category] = (byCategory[e.category] || 0) + Number(e.amount); });
-  const pieData = Object.entries(byCategory).map(([name, value]) => ({ name, value }));
-  const topCategory = pieData.slice().sort((a, b) => b.value - a.value)[0];
+  chartEntries.forEach((e) => { byCategory[e.category] = (byCategory[e.category] || 0) + Number(e.amount); });
+  const pieData = Object.entries(byCategory).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+  const topSpend = (() => {
+    const m = {};
+    debits.forEach((e) => { m[e.category] = (m[e.category] || 0) + Number(e.amount); });
+    return Object.entries(m).sort((a, b) => b[1] - a[1])[0];
+  })();
 
   return (
     <div className="screen" id="expenseScreen">
@@ -73,7 +107,7 @@ export default function ExpenseApp({ session, theme, setTheme, onSignOut, onSwit
             <button className="app-switch-btn" onClick={onSwitchApp}>← All apps</button>
             <div className="brand-mark" style={{ marginBottom: 0 }}>
               <div className="brand-square" style={{ background: 'linear-gradient(135deg,#FF6B6B,#FFB84C)' }}>
-                <svg viewBox="0 0 24 24"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" /></svg>
+                <svg viewBox="0 0 24 24"><path d="M6 4h12M6 9h12M9 4c4 0 6 2 6 5s-2 5-6 5l7 6" /></svg>
               </div>
               <div className="wordmark">Expense Tracker</div>
             </div>
@@ -101,36 +135,50 @@ export default function ExpenseApp({ session, theme, setTheme, onSignOut, onSwit
             <button className="link-btn" style={{ marginLeft: allTime ? 0 : 12 }} onClick={() => setAllTime((v) => !v)}>
               {allTime ? 'Show by month' : 'View all time'}
             </button>
-            <button className="new-btn" style={{ marginLeft: 'auto' }} onClick={() => { setShowForm((v) => !v); setEditingId(null); }}>+ Add expense</button>
+            <button className="new-btn" style={{ marginLeft: 'auto' }} onClick={() => { setShowForm((v) => !v); setEditingId(null); }}>+ Add entry</button>
           </div>
 
+          {error && (
+            <div className="info-note warn">
+              <span>Something went wrong: {error}</span>
+              <button className="link-btn" onClick={() => setError('')}>Dismiss</button>
+            </div>
+          )}
+
           <div className="stat-row">
-            <div className="stat-card"><div className="stat-label">Total spent</div><div className="stat-value accent-coral">{fmtMoney(total)}</div></div>
-            <div className="stat-card"><div className="stat-label">Entries</div><div className="stat-value accent-teal">{count}</div></div>
-            <div className="stat-card"><div className="stat-label">Average</div><div className="stat-value accent-gold">{fmtMoney(avg)}</div></div>
+            <div className="stat-card"><div className="stat-label">Credited</div><div className="stat-value accent-green">{fmtMoney(totalCredit)}</div></div>
+            <div className="stat-card"><div className="stat-label">Spent</div><div className="stat-value accent-coral">{fmtMoney(totalSpent)}</div></div>
             <div className="stat-card">
-              <div className="stat-label">Top category</div>
-              <div className="stat-value" style={{ color: topCategory ? CATEGORY_COLORS[topCategory.name] : undefined, fontSize: 16 }}>
-                {topCategory ? topCategory.name : '—'}
+              <div className="stat-label">Balance</div>
+              <div className="stat-value" style={{ color: balance < 0 ? '#FF6B6B' : '#2ECC71' }}>{fmtMoney(balance)}</div>
+            </div>
+            <div className="stat-card"><div className="stat-label">Entries</div><div className="stat-value accent-teal">{periodEntries.length}</div></div>
+            <div className="stat-card">
+              <div className="stat-label">Top spend</div>
+              <div className="stat-value" style={{ color: topSpend ? colorFor(topSpend[0]) : undefined, fontSize: 16 }}>
+                {topSpend ? topSpend[0] : '—'}
               </div>
             </div>
           </div>
 
           {showForm && (
-            <ExpenseForm
+            <EntryForm
               initial={{}}
               onCancel={() => setShowForm(false)}
-              onSave={async (data) => { await addExpense(data); setShowForm(false); }}
+              onSave={async (data) => { if (await addExpense(data)) setShowForm(false); }}
             />
           )}
 
           <div className="exp-layout">
             <div className="exp-chart-card">
-              <div className="side-label" style={{ marginBottom: 14 }}>Spending by category</div>
+              <div className="seg" style={{ marginBottom: 14 }}>
+                <button className={chartType === 'debit' ? 'active' : ''} onClick={() => { setChartType('debit'); setCategoryFilter(''); }}>Spending</button>
+                <button className={chartType === 'credit' ? 'active credit' : ''} onClick={() => { setChartType('credit'); setCategoryFilter(''); }}>Credits</button>
+              </div>
               {pieData.length === 0 ? (
                 <div className="empty-state" style={{ padding: '30px 10px' }}>
                   <div className="em-title">No data yet</div>
-                  <div className="em-sub">Add an expense to see the breakdown.</div>
+                  <div className="em-sub">{chartType === 'debit' ? 'Add an expense to see the breakdown.' : 'Add a credit to see where money came from.'}</div>
                 </div>
               ) : (
                 <>
@@ -139,7 +187,7 @@ export default function ExpenseApp({ session, theme, setTheme, onSignOut, onSwit
                       <PieChart>
                         <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={2}>
                           {pieData.map((entry) => (
-                            <Cell key={entry.name} fill={CATEGORY_COLORS[entry.name] || '#999'} stroke="none" />
+                            <Cell key={entry.name} fill={colorFor(entry.name)} stroke="none" />
                           ))}
                         </Pie>
                         <Tooltip formatter={(value) => fmtMoney(value)} />
@@ -147,11 +195,11 @@ export default function ExpenseApp({ session, theme, setTheme, onSignOut, onSwit
                     </ResponsiveContainer>
                   </div>
                   <div style={{ marginTop: 10 }}>
-                    {pieData.sort((a, b) => b.value - a.value).map((d) => (
+                    {pieData.map((d) => (
                       <div key={d.name} className="legend-row" style={{ cursor: 'pointer' }}
-                        onClick={() => setCategoryFilter(categoryFilter === d.name ? '' : d.name)}>
+                        onClick={() => { setTypeFilter(chartType); setCategoryFilter(categoryFilter === d.name ? '' : d.name); }}>
                         <div className="legend-left">
-                          <span className="legend-dot" style={{ background: CATEGORY_COLORS[d.name] }} />
+                          <span className="legend-dot" style={{ background: colorFor(d.name) }} />
                           <span style={{ fontWeight: categoryFilter === d.name ? 700 : 400, color: categoryFilter === d.name ? 'var(--text)' : undefined }}>{d.name}</span>
                         </div>
                         <span className="legend-amt">{fmtMoney(d.value)}</span>
@@ -163,6 +211,11 @@ export default function ExpenseApp({ session, theme, setTheme, onSignOut, onSwit
             </div>
 
             <div className="exp-list-col">
+              <div className="seg" style={{ marginBottom: 14 }}>
+                <button className={typeFilter === 'all' ? 'active' : ''} onClick={() => { setTypeFilter('all'); setCategoryFilter(''); }}>All</button>
+                <button className={typeFilter === 'debit' ? 'active' : ''} onClick={() => { setTypeFilter('debit'); setCategoryFilter(''); }}>Expenses</button>
+                <button className={typeFilter === 'credit' ? 'active credit' : ''} onClick={() => { setTypeFilter('credit'); setCategoryFilter(''); }}>Credits</button>
+              </div>
               {categoryFilter && (
                 <div className="info-note">
                   <span>Filtering by <strong>{categoryFilter}</strong></span>
@@ -170,14 +223,14 @@ export default function ExpenseApp({ session, theme, setTheme, onSignOut, onSwit
                 </div>
               )}
               {filtered.length === 0 ? (
-                <div className="empty-state"><div className="em-title">Nothing here yet</div><div className="em-sub">Add your first expense above.</div></div>
+                <div className="empty-state"><div className="em-title">Nothing here yet</div><div className="em-sub">Add your first entry above.</div></div>
               ) : (
                 filtered.map((e) =>
                   editingId === e.id ? (
-                    <ExpenseForm key={e.id} initial={e} onCancel={() => setEditingId(null)}
-                      onSave={async (data) => { await updateExpense(e.id, data); setEditingId(null); }} />
+                    <EntryForm key={e.id} initial={e} onCancel={() => setEditingId(null)}
+                      onSave={async (data) => { if (await updateExpense(e.id, data)) setEditingId(null); }} />
                   ) : (
-                    <ExpenseRow key={e.id} exp={e} onEdit={() => { setEditingId(e.id); setShowForm(false); }} onDelete={() => deleteExpense(e.id)} />
+                    <EntryRow key={e.id} exp={e} onEdit={() => { setEditingId(e.id); setShowForm(false); }} onDelete={() => deleteExpense(e.id)} />
                   )
                 )
               )}
@@ -189,25 +242,37 @@ export default function ExpenseApp({ session, theme, setTheme, onSignOut, onSwit
   );
 }
 
-function ExpenseForm({ initial, onSave, onCancel }) {
+function EntryForm({ initial, onSave, onCancel }) {
   const today = new Date();
   const defaultDate = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
+  const [type, setType] = useState(initial.type === 'credit' ? 'credit' : 'debit');
   const [date, setDate] = useState(initial.date || defaultDate);
-  const [category, setCategory] = useState(initial.category || CATEGORY_LIST[0]);
+  const [category, setCategory] = useState(initial.category || CATEGORIES[initial.type === 'credit' ? 'credit' : 'debit'][0]);
   const [entry, setEntry] = useState(initial.entry || '');
   const [amount, setAmount] = useState(initial.amount != null ? String(initial.amount) : '');
+
+  function switchType(t) {
+    setType(t);
+    if (!CATEGORIES[t].includes(category)) setCategory(CATEGORIES[t][0]);
+  }
 
   return (
     <div className="exp-form">
       <div className="exp-form-row">
+        <div className="seg">
+          <button type="button" className={type === 'debit' ? 'active' : ''} onClick={() => switchType('debit')}>Expense</button>
+          <button type="button" className={type === 'credit' ? 'active credit' : ''} onClick={() => switchType('credit')}>Credit</button>
+        </div>
+      </div>
+      <div className="exp-form-row">
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
         <select value={category} onChange={(e) => setCategory(e.target.value)}>
-          {CATEGORY_LIST.map((c) => <option key={c} value={c}>{c}</option>)}
+          {CATEGORIES[type].map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       </div>
       <div className="exp-form-row">
-        <input type="text" style={{ flex: 1 }} placeholder="What was it for?" value={entry} onChange={(e) => setEntry(e.target.value)} autoFocus />
-        <input type="number" min="0" step="0.01" placeholder="Amount" style={{ width: 130 }} value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <input type="text" style={{ flex: 1 }} placeholder={type === 'credit' ? 'Where did it come from?' : 'What was it for?'} value={entry} onChange={(e) => setEntry(e.target.value)} autoFocus />
+        <input type="number" min="0" step="0.01" placeholder="Amount (₹)" style={{ width: 140 }} value={amount} onChange={(e) => setAmount(e.target.value)} />
       </div>
       <div className="new-form-actions">
         <button className="btn-ghost" onClick={onCancel}>Cancel</button>
@@ -216,27 +281,33 @@ function ExpenseForm({ initial, onSave, onCancel }) {
           onClick={() => {
             const amt = parseFloat(amount);
             if (!entry.trim() || isNaN(amt) || amt < 0 || !date) return;
-            onSave({ date, category, entry: entry.trim(), amount: amt });
+            onSave({ date, category, entry: entry.trim(), amount: amt, type });
           }}
         >
-          {initial.id ? 'Save changes' : 'Add expense'}
+          {initial.id ? 'Save changes' : type === 'credit' ? 'Add credit' : 'Add expense'}
         </button>
       </div>
     </div>
   );
 }
 
-function ExpenseRow({ exp, onEdit, onDelete }) {
-  const color = CATEGORY_COLORS[exp.category] || '#999';
+function EntryRow({ exp, onEdit, onDelete }) {
+  const isCredit = typeOf(exp) === 'credit';
+  const color = colorFor(exp.category);
   const d = new Date(exp.date + 'T00:00:00');
   return (
     <div className="expense-card">
       <div className="expense-cat-chip" style={{ background: color }}>{exp.category.slice(0, 2).toUpperCase()}</div>
       <div className="expense-info">
         <div className="expense-entry">{exp.entry}</div>
-        <div className="expense-meta">{exp.category} · {d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+        <div className="expense-meta">
+          {isCredit && <span style={{ color: '#2ECC71', fontWeight: 700 }}>Credit · </span>}
+          {exp.category} · {d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+        </div>
       </div>
-      <div className="expense-amount" style={{ color }}>{fmtMoney(exp.amount)}</div>
+      <div className="expense-amount" style={{ color: isCredit ? '#2ECC71' : color }}>
+        {isCredit ? '+ ' : '− '}{fmtMoney(exp.amount)}
+      </div>
       <div className="expense-actions">
         <button className="mini-btn" onClick={onEdit}>Edit</button>
         <button className="mini-btn danger" onClick={onDelete}>Delete</button>

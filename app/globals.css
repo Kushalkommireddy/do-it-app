@@ -219,6 +219,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .stat-value.accent-teal{color:#4ECDC4;}
 .stat-value.accent-coral{color:#FF6B6B;}
 .stat-value.accent-gold{color:#FFB84C;}
+.stat-value.accent-green{color:#2ECC71;}
+.seg{display:inline-flex;background:var(--bg-3);border-radius:10px;padding:3px;gap:2px;}
+.seg button{background:none;border:none;padding:7px 14px;font-size:12.5px;font-weight:600;color:var(--text-muted);border-radius:8px;}
+.seg button.active{background:var(--accent);color:var(--btn-text);}
+.seg button.active.credit{background:#2ECC71;color:#fff;}
 
 .exp-layout{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap;}
 .exp-chart-card{flex:1;min-width:280px;max-width:380px;background:var(--bg-2);border:1px solid var(--bg-3);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow);}
